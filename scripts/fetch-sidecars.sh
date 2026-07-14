@@ -90,7 +90,7 @@ if [ "$FORCE" -eq 1 ] || [ ! -f "$RE_EXTRACT/$RE_BIN_NAME" ]; then
   mkdir -p "$RE_EXTRACT"
   unzip -q -o "$RE_ZIP" "$RE_BIN_NAME" -d "$RE_EXTRACT"
 fi
-place_binary "$RE_EXTRACT/$RE_BIN_NAME" "realesrgan-ncnn-vulkan"
+place_binary "$RE_EXTRACT/$RE_BIN_NAME" "animeupscale-realesrgan"
 
 ### 2. RIFE ncnn-vulkan ###
 if [ "$PLATFORM" = "linux" ]; then
@@ -111,7 +111,7 @@ if [ "$FORCE" -eq 1 ] || [ ! -f "$RIFE_EXTRACT/$RIFE_TOPDIR/$RIFE_BIN_NAME" ]; t
   mkdir -p "$RIFE_EXTRACT"
   unzip -q -o "$RIFE_ZIP" "$RIFE_TOPDIR/$RIFE_BIN_NAME" -d "$RIFE_EXTRACT"
 fi
-place_binary "$RIFE_EXTRACT/$RIFE_TOPDIR/$RIFE_BIN_NAME" "rife-ncnn-vulkan"
+place_binary "$RIFE_EXTRACT/$RIFE_TOPDIR/$RIFE_BIN_NAME" "animeupscale-rife"
 
 ### 3. ffmpeg + ffprobe ###
 if [ "$PLATFORM" = "linux" ]; then
@@ -138,8 +138,8 @@ if [ "$FORCE" -eq 1 ] || [ ! -f "$FF_EXTRACT/$FF_TOPDIR/bin/ffmpeg$FF_EXE_EXT" ]
       "$FF_TOPDIR/bin/ffmpeg.exe" "$FF_TOPDIR/bin/ffprobe.exe" -d "$FF_EXTRACT"
   fi
 fi
-place_binary "$FF_EXTRACT/$FF_TOPDIR/bin/ffmpeg$FF_EXE_EXT" "ffmpeg"
-place_binary "$FF_EXTRACT/$FF_TOPDIR/bin/ffprobe$FF_EXE_EXT" "ffprobe"
+place_binary "$FF_EXTRACT/$FF_TOPDIR/bin/ffmpeg$FF_EXE_EXT" "animeupscale-ffmpeg"
+place_binary "$FF_EXTRACT/$FF_TOPDIR/bin/ffprobe$FF_EXE_EXT" "animeupscale-ffprobe"
 
 log "Готово. target-triple=$TARGET_TRIPLE"
 ls -la "$BIN_DIR" >&2

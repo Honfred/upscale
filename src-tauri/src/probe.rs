@@ -105,7 +105,7 @@ fn choose_fps(r_frame_rate: Option<&str>, avg_frame_rate: Option<&str>) -> Optio
 pub async fn probe(app: &AppHandle, path: &str) -> Result<SourceInfo> {
     let video_json = run_sidecar_capture(
         app,
-        "ffprobe",
+        crate::config::BIN_FFPROBE,
         &[
             "-v".to_string(),
             "error".to_string(),
@@ -161,7 +161,7 @@ pub async fn probe(app: &AppHandle, path: &str) -> Result<SourceInfo> {
 
     let streams_json = run_sidecar_capture(
         app,
-        "ffprobe",
+        crate::config::BIN_FFPROBE,
         &[
             "-v".to_string(),
             "error".to_string(),

@@ -79,7 +79,7 @@ async fn run_concat_ffmpeg(
 
     args.push(output_path.to_string_lossy().to_string());
 
-    run_sidecar(app, "ffmpeg", &args, cancel, &mut |_line| {}).await
+    run_sidecar(app, crate::config::BIN_FFMPEG, &args, cancel, &mut |_line| {}).await
 }
 
 /// Имя временного файла для атомарной записи финального результата:

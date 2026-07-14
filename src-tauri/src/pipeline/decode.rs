@@ -65,7 +65,7 @@ pub async fn decode_segment(
 
     let frame_re = Regex::new(r"frame=\s*(\d+)").expect("статический regex должен быть валиден");
 
-    run_sidecar(app, "ffmpeg", &args, cancel, &mut |line| {
+    run_sidecar(app, crate::config::BIN_FFMPEG, &args, cancel, &mut |line| {
         if let Some(caps) = frame_re.captures(line) {
             if let Ok(n) = caps[1].parse::<u64>() {
                 on_progress(n.min(seg.frame_count));

@@ -297,7 +297,7 @@ async fn probe_vulkan_inner(app: &AppHandle, dir: &std::path::Path) -> bool {
 
     let gen_ok = spawn_and_wait_success(
         app,
-        "ffmpeg",
+        crate::config::BIN_FFMPEG,
         vec![
             "-v".to_string(),
             "error".to_string(),
@@ -324,7 +324,7 @@ async fn probe_vulkan_inner(app: &AppHandle, dir: &std::path::Path) -> bool {
 
     let run_ok = spawn_and_wait_success(
         app,
-        "realesrgan-ncnn-vulkan",
+        crate::config::BIN_REALESRGAN,
         vec![
             "-i".to_string(),
             img_path.to_string_lossy().to_string(),
@@ -367,8 +367,8 @@ fn parse_nvenc_codecs(ffmpeg_encoders_stdout: &str) -> Vec<Codec> {
 pub async fn system_check(app: AppHandle) -> Result<SystemInfo> {
     // ffmpeg/ffprobe -version корректно завершаются кодом 0 — это честный
     // критерий "работает".
-    let (ffmpeg_code, _) = probe_sidecar(&app, "ffmpeg", &["-version"]).await;
-    let (ffprobe_code, _) = probe_sidecar(&app, "ffprobe", &["-version"]).await;
+    let (ffmpeg_code, _) = probe_sidecar(&app, crate::config::BIN_FFMPEG, &["-version"]).await;
+    let (ffprobe_code, _) = probe_sidecar(&app, crate::config::BIN_FFPROBE, &["-version"]).await;
     let ffmpeg_ok = ffmpeg_code == Some(0);
     let ffprobe_ok = ffprobe_code == Some(0);
 
@@ -381,13 +381,13 @@ pub async fn system_check(app: AppHandle) -> Result<SystemInfo> {
     // realesrgan_ok/rife_ok НЕ являются проверкой Vulkan (см. probe_vulkan
     // ниже) — они лишь подтверждают, что сам бинарник присутствует и
     // исполняем.
-    let (realesrgan_code, _) = probe_sidecar(&app, "realesrgan-ncnn-vulkan", &["-h"]).await;
-    let (rife_code, _) = probe_sidecar(&app, "rife-ncnn-vulkan", &["-h"]).await;
+    let (realesrgan_code, _) = probe_sidecar(&app, crate::config::BIN_REALESRGAN, &["-h"]).await;
+    let (rife_code, _) = probe_sidecar(&app, crate::config::BIN_RIFE, &["-h"]).await;
     let realesrgan_ok = realesrgan_code.is_some();
     let rife_ok = rife_code.is_some();
 
     let nvenc_codecs = if ffmpeg_ok {
-        let (_, stdout) = probe_sidecar(&app, "ffmpeg", &["-hide_banner", "-encoders"]).await;
+        let (_, stdout) = probe_sidecar(&app, crate::config::BIN_FFMPEG, &["-hide_banner", "-encoders"]).await;
         parse_nvenc_codecs(&stdout)
     } else {
         Vec::new()

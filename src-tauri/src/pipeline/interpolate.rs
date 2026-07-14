@@ -82,7 +82,7 @@ pub async fn interpolate_segment(
             on_progress(count);
         });
 
-    let result = run_sidecar(app, "rife-ncnn-vulkan", &args, cancel, &mut |_line| {}).await;
+    let result = run_sidecar(app, crate::config::BIN_RIFE, &args, cancel, &mut |_line| {}).await;
 
     let _ = stop_tx.send(());
     let _ = handle.await;

@@ -146,7 +146,7 @@ if ($Force -or -not (Test-Path (Join-Path $reExtract $reBinName))) {
     Remove-Item -Recurse -Force $reExtract -ErrorAction SilentlyContinue
     Expand-ZipMembers -Archive $reZip -Dest $reExtract -Members @($reBinName)
 }
-Set-Sidecar -Src (Join-Path $reExtract $reBinName) -Name "realesrgan-ncnn-vulkan"
+Set-Sidecar -Src (Join-Path $reExtract $reBinName) -Name "animeupscale-realesrgan"
 # realesrgan-ncnn-vulkan.exe динамически линкуется с vcomp140.dll (OpenMP из
 # MSVC redist); в архиве DLL лежит рядом с exe (запись "vcomp140.dll" в корне).
 # Кладём её в binaries/ — src-tauri/tauri.windows.conf.json бандлит её через
@@ -183,7 +183,7 @@ if ($Force -or -not (Test-Path (Join-Path $rifeExtract $rifeBinRelPath))) {
     Remove-Item -Recurse -Force $rifeExtract -ErrorAction SilentlyContinue
     Expand-ZipMembers -Archive $rifeZip -Dest $rifeExtract -Members @($rifeBinRelPath)
 }
-Set-Sidecar -Src (Join-Path $rifeExtract $rifeBinRelPath) -Name "rife-ncnn-vulkan"
+Set-Sidecar -Src (Join-Path $rifeExtract $rifeBinRelPath) -Name "animeupscale-rife"
 
 ### 3. ffmpeg + ffprobe ###
 if ($Platform -eq "linux") {
@@ -217,8 +217,8 @@ if ($Force -or -not (Test-Path (Join-Path $ffExtract $ffmpegRelPath))) {
         Expand-ZipMembers -Archive $ffArchive -Dest $ffExtract -Members @($ffmpegRelPath, $ffprobeRelPath)
     }
 }
-Set-Sidecar -Src (Join-Path $ffExtract $ffmpegRelPath) -Name "ffmpeg"
-Set-Sidecar -Src (Join-Path $ffExtract $ffprobeRelPath) -Name "ffprobe"
+Set-Sidecar -Src (Join-Path $ffExtract $ffmpegRelPath) -Name "animeupscale-ffmpeg"
+Set-Sidecar -Src (Join-Path $ffExtract $ffprobeRelPath) -Name "animeupscale-ffprobe"
 
 Write-Log "Готово. target-triple=$TargetTriple"
 Get-ChildItem $BinDir | Format-Table Name, Length

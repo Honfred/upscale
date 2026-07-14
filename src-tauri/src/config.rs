@@ -52,6 +52,14 @@ impl UpscaleSettings {
     }
 }
 
+/// Имена sidecar-бинарников. Префикс "animeupscale-" обязателен: deb-пакет
+/// раскладывает externalBin в /usr/bin, и «голые» имена (ffmpeg, ffprobe)
+/// конфликтуют с системными пакетами при установке.
+pub const BIN_FFMPEG: &str = "animeupscale-ffmpeg";
+pub const BIN_FFPROBE: &str = "animeupscale-ffprobe";
+pub const BIN_REALESRGAN: &str = "animeupscale-realesrgan";
+pub const BIN_RIFE: &str = "animeupscale-rife";
+
 /// NVENC preset зафиксирован (баланс скорость/качество для 4070 Super).
 pub const NVENC_PRESET: &str = "p5";
 /// Tile size для ncnn-vulkan на 12GB VRAM при 4K-выводе.
