@@ -11,3 +11,6 @@ src-tauri/resources/models-rife/
 
 *.log
 .DS_Store
+
+# Кэш скачанных архивов sidecar-бинарников/моделей (scripts/fetch-*.sh, fetch-sidecars.ps1)
+.cache/
