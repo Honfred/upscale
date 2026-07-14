@@ -1,0 +1,26 @@
+/* Задача C: дизайн-система (тёмная тема, CSS-переменные). */
+:root {
+  --bg: #0e0f13;
+  --surface: #16181f;
+  --border: #23262f;
+  --text: #e8eaed;
+  --text-muted: #8a8f9a;
+  --accent: #7c5cff;
+  --accent-2: #5cc8ff;
+  --ok: #3fb950;
+  --err: #f85149;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# Sidecar-бинарники и модели: скачиваются scripts/fetch-*.sh (см. README)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+src-tauri/resources/models-realesrgan/
+src-tauri/resources/models-rife/
+
+*.log
+.DS_Store
