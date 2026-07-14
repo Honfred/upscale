@@ -34,18 +34,22 @@ pub fn target_frames_for_segment(seg: &Segment, fps: f32, target_fps: f32) -> u6
     (end_cum - start_cum).max(0.0) as u64
 }
 
-/// Интерполирует `{seg_dir}/up` -> `{seg_dir}/rife`, добиваясь `target_frames`
-/// выходных кадров (rife-ncnn-vulkan поддерживает произвольное -n).
+/// Интерполирует `{seg_dir}/{frames_dir_name}` -> `{seg_dir}/rife`, добиваясь
+/// `target_frames` выходных кадров (rife-ncnn-vulkan поддерживает
+/// произвольное -n). `frames_dir_name` — обычно "up" (после апскейла), но
+/// "in" (прямо после decode), если стадия апскейла была пропущена (source
+/// уже не уже target_width, см. config::scale_for).
 /// Прогресс — фоновый подсчёт PNG в `rife/` раз в 500мс (см. progress.rs).
 pub async fn interpolate_segment(
     app: &AppHandle,
     seg_dir: &Path,
+    frames_dir_name: &str,
     rife_model_dir: &Path,
     target_frames: u64,
     cancel: &CancellationToken,
     mut on_progress: impl FnMut(u64) + Send + 'static,
 ) -> Result<()> {
-    let in_dir = seg_dir.join("up");
+    let in_dir = seg_dir.join(frames_dir_name);
     let out_dir = seg_dir.join("rife");
     std::fs::create_dir_all(&out_dir)?;
 

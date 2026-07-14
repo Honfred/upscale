@@ -38,7 +38,13 @@ impl JobRegistry {
     }
 
     /// Регистрирует новую джобу в состоянии Running / overall_progress = 0.0.
+    /// Перед вставкой удаляет из реестра все записи в терминальном состоянии
+    /// (Done/Error/Cancelled) — иначе реестр рос бы неограниченно на каждый
+    /// запуск джобы. Безопасно, т.к. insert вызывается только после проверки
+    /// any_running()==false (см. commands::start_job), то есть все текущие
+    /// записи на этот момент терминальны.
     pub fn insert(&mut self, job_id: String, cancel: CancellationToken) {
+        self.jobs.retain(|_, h| h.status.state == JobState::Running);
         self.jobs.insert(
             job_id.clone(),
             JobHandle {
@@ -77,4 +83,44 @@ impl JobRegistry {
 #[derive(Default)]
 pub struct AppState {
     pub jobs: Mutex<JobRegistry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insert_prunes_terminal_jobs() {
+        let mut registry = JobRegistry::default();
+        registry.insert("job1".to_string(), CancellationToken::new());
+        registry.set_state("job1", JobState::Done);
+        registry.insert("job2".to_string(), CancellationToken::new());
+        registry.set_state("job2", JobState::Error);
+        registry.insert("job3".to_string(), CancellationToken::new());
+        registry.set_state("job3", JobState::Cancelled);
+
+        // Перед этим insert реестр содержит 3 терминальные джобы — все они
+        // должны быть удалены, останется только job4.
+        registry.insert("job4".to_string(), CancellationToken::new());
+
+        assert_eq!(registry.jobs.len(), 1);
+        assert!(registry.status("job1").is_none());
+        assert!(registry.status("job2").is_none());
+        assert!(registry.status("job3").is_none());
+        assert!(registry.status("job4").is_some());
+    }
+
+    #[test]
+    fn insert_keeps_running_jobs() {
+        let mut registry = JobRegistry::default();
+        registry.insert("job1".to_string(), CancellationToken::new());
+        // job1 остаётся Running — не должен быть удалён следующим insert
+        // (в реальном использовании такой insert не произойдёт, т.к.
+        // commands::start_job проверяет any_running() заранее, но
+        // JobRegistry сама по себе не должна терять активные джобы).
+        registry.insert("job2".to_string(), CancellationToken::new());
+
+        assert_eq!(registry.jobs.len(), 2);
+        assert!(registry.status("job1").is_some());
+    }
 }

@@ -19,6 +19,14 @@ impl Segment {
 /// кадрах: round(segment_seconds * fps)). Последний сегмент забирает остаток.
 /// sum(frame_count_i) всегда равен исходному frame_count — границы считаются
 /// в целых кадрах, поэтому дрейфа не возникает.
+///
+/// RIFE (интерполяция) требует минимум 2 входных кадра на сегмент. Если
+/// получившийся последний сегмент оказался меньше 2 кадров (возможно, когда
+/// длина видео чуть больше целого числа "полных" сегментов) и в видео есть
+/// куда его слить, он сливается с предыдущим сегментом. Если всё видео
+/// целиком короче 2 кадров, единственный сегмент остаётся как есть —
+/// pipeline::run в этом случае пропускает интерполяцию целиком (аналогично
+/// target_fps=None).
 pub fn compute_segments(frame_count: u64, fps: f32, segment_seconds: u32) -> Vec<Segment> {
     if frame_count == 0 {
         return Vec::new();
@@ -42,12 +50,36 @@ pub fn compute_segments(frame_count: u64, fps: f32, segment_seconds: u32) -> Vec
         index += 1;
     }
 
+    if segments.len() > 1 && segments.last().map(|s| s.frame_count).unwrap_or(0) < 2 {
+        let extra = segments.pop().expect("segments.len() > 1 проверено выше").frame_count;
+        if let Some(prev) = segments.last_mut() {
+            prev.frame_count += extra;
+        }
+    }
+
     segments
 }
 
-/// Тайм-код начала сегмента в секундах (для ffmpeg -ss на входном seek).
+/// Тайм-код начала сегмента в секундах (используется в тестах/для
+/// нормального, "неточного" случая; для реального ffmpeg -ss на границе
+/// сегмента используется `seek_timestamp`, см. ниже).
 pub fn start_timestamp(start_frame: u64, fps: f32) -> f64 {
     start_frame as f64 / fps as f64
+}
+
+/// Тайм-код для input-seek ffmpeg (-ss перед -i), гарантирующий, что первым
+/// декодированным кадром окажется РОВНО `start_frame` независимо от
+/// float-округления при дробном fps: сикаем в середину предыдущего кадра
+/// `(start_frame - 0.5) / fps`, тогда ffmpeg отбрасывает все кадры с
+/// pts < target и первым остаётся кадр `start_frame`. Для start_frame == 0
+/// сик не нужен (возвращает None — decode не должен добавлять -ss вовсе,
+/// т.к. отрицательный таймкод не имеет смысла и не нужен для самого начала).
+pub fn seek_timestamp(start_frame: u64, fps: f32) -> Option<f64> {
+    if start_frame == 0 {
+        None
+    } else {
+        Some((start_frame as f64 - 0.5) / fps as f64)
+    }
 }
 
 /// Форматирует тайм-код с 6 знаками после запятой (формат, понятный ffmpeg -ss).
@@ -124,5 +156,63 @@ mod tests {
     fn format_timestamp_has_six_decimals() {
         assert_eq!(format_timestamp(10.0), "10.000000");
         assert_eq!(format_timestamp(1.5), "1.500000");
+    }
+
+    #[test]
+    fn seek_timestamp_none_for_first_segment() {
+        assert_eq!(seek_timestamp(0, 24.0), None);
+    }
+
+    #[test]
+    fn seek_timestamp_is_half_frame_before_start_frame() {
+        // start_frame=240 @ 24fps -> обычный таймкод 10.0с, сик-таймкод
+        // должен быть на пол-кадра раньше: 10.0 - 1/48.
+        let ts = seek_timestamp(240, 24.0).unwrap();
+        let expected = 10.0 - 0.5 / 24.0;
+        assert!((ts - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn seek_timestamp_handles_fractional_fps_without_drift() {
+        // Для дробного fps (23.976) сик всё равно должен быть строго меньше
+        // "точного" таймкода кадра, чтобы ffmpeg не потерял этот кадр из-за
+        // округления pts.
+        let fps = 23.976_f32;
+        let start = 100u64;
+        let exact = start_timestamp(start, fps);
+        let seek = seek_timestamp(start, fps).unwrap();
+        assert!(seek < exact);
+    }
+
+    #[test]
+    fn tiny_last_segment_is_merged_into_previous() {
+        // segment_frames = round(10*24) = 240. 241 = 240*1 + 1: последний
+        // сегмент из 1 кадра должен слиться с предыдущим, а не остаться
+        // отдельным (RIFE не может интерполировать 1 кадр).
+        let segments = compute_segments(241, 24.0, 10);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].frame_count, 241);
+        assert_eq!(segments[0].start_frame, 0);
+    }
+
+    #[test]
+    fn tiny_last_segment_merge_keeps_earlier_segments_intact() {
+        // 481 = 240*2 + 1: последний однокадровый сегмент сливается с
+        // ВТОРЫМ (не первым) сегментом.
+        let segments = compute_segments(481, 24.0, 10);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].frame_count, 240);
+        assert_eq!(segments[1].frame_count, 241);
+        let total: u64 = segments.iter().map(|s| s.frame_count).sum();
+        assert_eq!(total, 481);
+    }
+
+    #[test]
+    fn whole_video_under_two_frames_stays_single_segment() {
+        // Единственный сегмент из 1 кадра не сливается (некуда) — pipeline
+        // сам решает пропустить интерполяцию в этом случае.
+        let segments = compute_segments(1, 24.0, 10);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].frame_count, 1);
     }
 }

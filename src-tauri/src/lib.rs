@@ -38,7 +38,7 @@ pub fn run() {
                 let progress = value.get("overallProgress").and_then(|v| v.as_f64());
                 if let (Some(job_id), Some(progress)) = (job_id, progress) {
                     let state = app_handle.state::<state::AppState>();
-                    let mut jobs = state.jobs.lock().unwrap();
+                    let mut jobs = state.jobs.lock().unwrap_or_else(|e| e.into_inner());
                     jobs.set_progress(job_id, progress as f32);
                 }
             });

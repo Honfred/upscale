@@ -71,10 +71,29 @@ async fn run_concat_ffmpeg(
     run_sidecar(app, "ffmpeg", &args, cancel, &mut |_line| {}).await
 }
 
+/// Имя временного файла для атомарной записи финального результата:
+/// `{output_path}.part` в ТОЙ ЖЕ директории, что и `output_path` (условие
+/// атомарности rename на одном устройстве).
+fn part_path_for(output_path: &Path) -> PathBuf {
+    let mut name = output_path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
+    name.push(".part");
+    output_path.with_file_name(name)
+}
+
 /// Склеивает сегментные .mkv (`segment_outputs`, в порядке индексов) в
 /// `output_path`, домешивая аудио/субтитры из исходника. Если сборка с
 /// субтитрами не удалась (напр. несовместимый формат вроде ASS в mp4),
 /// повторяет попытку без них и возвращает предупреждение через `warnings`.
+///
+/// Пишет во временный файл `{output_path}.part` и переименовывает в
+/// `output_path` только по успеху (rename в той же директории — атомарная
+/// операция на большинстве ФС). При ошибке/отмене `.part` удаляется, чтобы
+/// в пользовательской папке не оставался битый выходной файл, который
+/// paths::output_path на следующем запуске принял бы за существующий и
+/// начал дедуплицировать имя (_1, _2...).
 pub async fn concat_segments(
     app: &AppHandle,
     segment_outputs: &[PathBuf],
@@ -91,6 +110,11 @@ pub async fn concat_segments(
         std::fs::create_dir_all(parent)?;
     }
 
+    let part_path = part_path_for(output_path);
+    // На случай, если от предыдущего неудачного/отменённого прогона остался
+    // осиротевший .part (например, приложение было убито до cleanup).
+    let _ = std::fs::remove_file(&part_path);
+
     let mut warnings = Vec::new();
     let has_subs = !source.subtitle_streams.is_empty();
 
@@ -99,25 +123,54 @@ pub async fn concat_segments(
         &concat_txt,
         source,
         settings,
-        output_path,
+        &part_path,
         has_subs,
         cancel,
     )
     .await;
 
-    match result {
-        Ok(()) => {}
+    let result = match result {
+        Ok(()) => Ok(()),
         // Отмену и общие ошибки процесса не маскируем повторной попыткой.
-        Err(AppError::Cancelled) => return Err(AppError::Cancelled),
+        Err(AppError::Cancelled) => Err(AppError::Cancelled),
         Err(e) if has_subs => {
             warnings.push(format!(
                 "не удалось смультиплексировать субтитры (несовместимый формат для контейнера): {e}; файл собран без субтитров"
             ));
-            run_concat_ffmpeg(app, &concat_txt, source, settings, output_path, false, cancel)
-                .await?;
+            run_concat_ffmpeg(app, &concat_txt, source, settings, &part_path, false, cancel).await
         }
-        Err(e) => return Err(e),
+        Err(e) => Err(e),
+    };
+
+    match result {
+        Ok(()) => {
+            std::fs::rename(&part_path, output_path)?;
+            Ok(warnings)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&part_path);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_path_is_in_same_directory_with_part_suffix() {
+        let output = PathBuf::from("/videos/out/anime_4k60.mkv");
+        let part = part_path_for(&output);
+        assert_eq!(part, PathBuf::from("/videos/out/anime_4k60.mkv.part"));
+        // Та же директория — обязательное условие атомарности rename.
+        assert_eq!(part.parent(), output.parent());
     }
 
-    Ok(warnings)
+    #[test]
+    fn part_path_preserves_mp4_extension_in_stem() {
+        let output = PathBuf::from("anime_4k60.mp4");
+        let part = part_path_for(&output);
+        assert_eq!(part, PathBuf::from("anime_4k60.mp4.part"));
+    }
 }

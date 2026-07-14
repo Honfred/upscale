@@ -41,6 +41,8 @@ export interface SourceInfo {
   fps: number;
   durationSec: number;
   frameCount: number;
+  /** true, если r_frame_rate заметно отличается от avg_frame_rate (VFR-контент). */
+  isVfr: boolean;
   hasAudio: boolean;
   subtitleStreams: number[];
   codecName: string;

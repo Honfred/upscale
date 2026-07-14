@@ -40,7 +40,13 @@ pub struct UpscaleSettings {
 
 impl UpscaleSettings {
     /// Масштаб модели realesr-animevideov3: clamp(ceil(target/source), 2, 4).
+    /// Если источник уже не уже целевой ширины (напр. исходное 4K видео при
+    /// target_width=3840), апскейл бессмысленен — возвращает 1 (стадия
+    /// апскейла в pipeline в этом случае пропускается, см. pipeline::run).
     pub fn scale_for(&self, source_width: u32) -> u32 {
+        if source_width >= self.target_width {
+            return 1;
+        }
         let s = (self.target_width + source_width - 1) / source_width.max(1);
         s.clamp(2, 4)
     }

@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::{AppError, Result};
 use crate::process::run_sidecar;
 
-use super::segment::{format_timestamp, start_timestamp, Segment};
+use super::segment::{format_timestamp, seek_timestamp, Segment};
 
 /// Декодирует кадры сегмента `seg` из `source_path` в `{seg_dir}/in/frame_%08d.png`.
 /// Использует input-seek (-ss перед -i) для скорости и -frames:v для точного
@@ -27,10 +27,9 @@ pub async fn decode_segment(
     let in_dir = seg_dir.join("in");
     std::fs::create_dir_all(&in_dir)?;
 
-    let start_ts = format_timestamp(start_timestamp(seg.start_frame, fps));
     let pattern = in_dir.join("frame_%08d.png");
 
-    let args = vec![
+    let mut args = vec![
         "-v".to_string(),
         "error".to_string(),
         // Без -stats периодическая строка "frame=..." не печатается вовсе,
@@ -38,8 +37,19 @@ pub async fn decode_segment(
         // проверено на реальном ffmpeg n7.1: без -stats stderr пуст.
         "-stats".to_string(),
         "-y".to_string(),
-        "-ss".to_string(),
-        start_ts,
+    ];
+
+    // Сик на границе сегмента (start_frame > 0): используем таймкод,
+    // смещённый на пол-кадра НАЗАД (см. seek_timestamp), чтобы первым
+    // декодированным кадром гарантированно оказался ровно start_frame даже
+    // при дробном fps (23.976 и т.п.), независимо от float-округления.
+    // Для start_frame == 0 -ss не нужен вовсе.
+    if let Some(ts) = seek_timestamp(seg.start_frame, fps) {
+        args.push("-ss".to_string());
+        args.push(format_timestamp(ts));
+    }
+
+    args.extend([
         "-i".to_string(),
         source_path.to_string_lossy().to_string(),
         "-frames:v".to_string(),
@@ -51,7 +61,7 @@ pub async fn decode_segment(
         "-pix_fmt".to_string(),
         "rgb24".to_string(),
         pattern.to_string_lossy().to_string(),
-    ];
+    ]);
 
     let frame_re = Regex::new(r"frame=\s*(\d+)").expect("статический regex должен быть валиден");
 

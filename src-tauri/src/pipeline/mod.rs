@@ -44,10 +44,11 @@ const EMA_ALPHA: f32 = 0.2;
 /// Веса стадий одного сегмента (Decode/Upscale/Interpolate/Encode).
 /// Их сумма по умолчанию 0.99 (см. events::stage_weight), оставшийся 0.01
 /// приходится на Concat, который считается ОДИН РАЗ на всю джобу (не за
-/// сегмент). Если интерполяция пропущена, её вес перераспределяется между
-/// остальными тремя стадиями пропорционально — сумма (0.99) не меняется,
-/// поэтому формула overall_progress ниже остаётся верной независимо от
-/// того, выполняется интерполяция или нет.
+/// сегмент). Если апскейл и/или интерполяция пропущены (апскейл — когда
+/// source_width >= target_width, интерполяция — когда target_fps не задан
+/// или видео короче 2 кадров), их вес перераспределяется между оставшимися
+/// активными стадиями пропорционально — сумма (0.99) не меняется, поэтому
+/// формула overall_progress ниже остаётся верной в любой комбинации.
 #[derive(Clone, Copy)]
 struct StageWeights {
     decode: f32,
@@ -57,29 +58,25 @@ struct StageWeights {
 }
 
 impl StageWeights {
-    fn new(interpolating: bool) -> Self {
+    fn new(upscaling: bool, interpolating: bool) -> Self {
         let decode = events::stage_weight(Stage::Decode);
         let upscale = events::stage_weight(Stage::Upscale);
         let interpolate = events::stage_weight(Stage::Interpolate);
         let encode = events::stage_weight(Stage::Encode);
 
-        if interpolating {
-            Self {
-                decode,
-                upscale,
-                interpolate,
-                encode,
-            }
-        } else {
-            let total = decode + upscale + interpolate + encode;
-            let remaining = decode + upscale + encode;
-            let factor = total / remaining;
-            Self {
-                decode: decode * factor,
-                upscale: upscale * factor,
-                interpolate: 0.0,
-                encode: encode * factor,
-            }
+        let total = decode + upscale + interpolate + encode;
+
+        let active_upscale = if upscaling { upscale } else { 0.0 };
+        let active_interpolate = if interpolating { interpolate } else { 0.0 };
+        // Decode и Encode выполняются всегда.
+        let remaining = decode + active_upscale + active_interpolate + encode;
+        let factor = if remaining > 0.0 { total / remaining } else { 1.0 };
+
+        Self {
+            decode: decode * factor,
+            upscale: active_upscale * factor,
+            interpolate: active_interpolate * factor,
+            encode: encode * factor,
         }
     }
 
@@ -160,12 +157,15 @@ fn report_stage(
     frames_total_stage: u64,
     force: bool,
 ) {
-    let mut state = match shared.lock() {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    // unwrap_or_else вместо unwrap(): отравление мьютекса (паника другого
+    // потока с захваченным локом) не должно навсегда убивать эмит прогресса
+    // для всей оставшейся джобы — состояние восстанавливается как есть.
+    let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
 
-    let frames_done_stage = frames_done_stage.min(frames_total_stage.max(frames_done_stage));
+    // Честный clamp (было no-op: `.min(total.max(done))` всегда возвращало
+    // done независимо от total). frames_done == frames_total по-прежнему
+    // даёт stage_progress = 1.0 ниже.
+    let frames_done_stage = frames_done_stage.min(frames_total_stage);
     let frames_done_global = state.frames_done_before_stage + frames_done_stage;
 
     let now = Instant::now();
@@ -240,9 +240,8 @@ fn report_stage(
 }
 
 fn mark_stage_done(shared: &SharedProgress, frames_total_stage: u64) {
-    if let Ok(mut state) = shared.lock() {
-        state.frames_done_before_stage += frames_total_stage;
-    }
+    let mut state = shared.lock().unwrap_or_else(|e| e.into_inner());
+    state.frames_done_before_stage += frames_total_stage;
 }
 
 /// Выходное число кадров сегмента, которое реально "потребляет" encode:
@@ -259,16 +258,23 @@ fn encode_input_frames(seg: &Segment, interpolating: bool, fps: f32, target_fps:
 /// как знаменатель для fps/ETA и как поле Started.total_frames.
 ///
 /// Для сегмента это: decode_out (=seg.frame_count) + upscale_out
-/// (=seg.frame_count, апскейл не меняет число кадров) + interpolate_out
-/// (0, если стадия пропущена, иначе результат target_frames_for_segment) +
-/// encode_out (столько же кадров, сколько encode реально кодирует —
-/// после интерполяции либо после апскейла).
-fn total_job_frames(segments: &[Segment], interpolating: bool, fps: f32, target_fps: Option<f32>) -> u64 {
+/// (0, если стадия пропущена (scale=1), иначе =seg.frame_count — апскейл не
+/// меняет число кадров) + interpolate_out (0, если стадия пропущена, иначе
+/// результат target_frames_for_segment) + encode_out (столько же кадров,
+/// сколько encode реально кодирует — после интерполяции либо после
+/// апскейла/декода).
+fn total_job_frames(
+    segments: &[Segment],
+    upscaling: bool,
+    interpolating: bool,
+    fps: f32,
+    target_fps: Option<f32>,
+) -> u64 {
     segments
         .iter()
         .map(|seg| {
             let decode_out = seg.frame_count;
-            let upscale_out = seg.frame_count;
+            let upscale_out = if upscaling { seg.frame_count } else { 0 };
             let interpolate_out = if interpolating {
                 interpolate::target_frames_for_segment(seg, fps, target_fps.unwrap())
             } else {
@@ -312,11 +318,16 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
 
     let est = estimate::estimate(source, settings, temp_root)?;
     let scale = est.scale;
-    // Кадры up/rife лежат на диске в СЫРОМ (не capped) разрешении апскейла —
+    // Кадры up/rife лежат на диске в СЫРОМ (не capped) разрешении апскейла
+    // (или в разрешении источника, если scale=1 — см. config::scale_for) —
     // downscale до target_width применяется только внутри encode. См.
     // комментарий в estimate::estimate.
     let raw_width = source.width * scale;
     let raw_height = source.height * scale;
+    // scale=1 означает, что источник уже не уже целевой ширины — апскейл
+    // бессмысленен (см. config::scale_for) и стадия полностью пропускается:
+    // interpolate/encode читают кадры прямо из in/.
+    let upscaling = scale > 1;
 
     let segments = segment::compute_segments(source.frame_count, source.fps, est.segment_seconds);
     let total_segments = segments.len() as u32;
@@ -326,10 +337,16 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
         ));
     }
 
-    let interpolating = interpolate::should_interpolate(source.fps, settings.target_fps);
-    let weights = StageWeights::new(interpolating);
+    // RIFE не может интерполировать сегмент короче 2 кадров; compute_segments
+    // уже сливает такой "хвостовой" сегмент с предыдущим, если это возможно,
+    // но если ВСЁ видео короче 2 кадров, сливать не с чем — интерполяция в
+    // этом случае пропускается целиком (аналогично target_fps=None).
+    let interpolating = source.frame_count >= 2
+        && interpolate::should_interpolate(source.fps, settings.target_fps);
+    let weights = StageWeights::new(upscaling, interpolating);
 
-    let total_frames_job = total_job_frames(&segments, interpolating, source.fps, settings.target_fps);
+    let total_frames_job =
+        total_job_frames(&segments, upscaling, interpolating, source.fps, settings.target_fps);
 
     events::emit_progress(
         app,
@@ -339,6 +356,17 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
             total_frames: total_frames_job,
         },
     );
+
+    if source.is_vfr {
+        events::emit_progress(
+            app,
+            &JobEvent::Warning {
+                job_id: job_id.clone(),
+                message: "VFR-видео (переменный кадр): возможна неточность на границах сегментов"
+                    .to_string(),
+            },
+        );
+    }
 
     let esrgan_models_dir = paths::esrgan_models_dir(app)?;
     let rife_dir = if interpolating {
@@ -367,10 +395,13 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
 
         // Проверка свободного места непосредственно перед сегментом (диск
         // мог заполниться другими процессами/предыдущими сегментами).
+        // Используется тот же порог (PEAK_FRACTION), что и в estimate::estimate,
+        // а не 100% free — иначе runtime-проверка была бы менее строгой, чем
+        // предварительная оценка, и могла бы пропустить job на грани отказа.
         let free_now = estimate::available_space(temp_root)?;
         let peak_now =
             estimate::segment_peak_bytes(source, settings, raw_width, raw_height, seg.frame_count);
-        if peak_now as f64 >= free_now as f64 {
+        if peak_now as f64 >= estimate::PEAK_FRACTION * free_now as f64 {
             return Err(AppError::DiskSpace {
                 needed: peak_now,
                 free: free_now,
@@ -420,14 +451,15 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
         );
         mark_stage_done(&shared_progress, seg.frame_count);
 
-        // --- upscale ---
+        // --- upscale (пропускается, если scale == 1: источник уже не уже
+        // target_width, см. config::scale_for) ---
         // Колбэк upscale вызывается из фонового tokio-таска (см.
         // pipeline/progress.rs), поэтому должен быть Send + 'static —
         // клонируем всё нужное состояние в замыкание.
         if cancel.is_cancelled() {
             return Err(AppError::Cancelled);
         }
-        {
+        if upscaling {
             let app_c = app.clone();
             let job_id_c = job_id.clone();
             let shared_c = shared_progress.clone();
@@ -457,25 +489,31 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
                 },
             )
             .await?;
+            report_stage(
+                app,
+                job_id,
+                &shared_progress,
+                &weights,
+                seg.index,
+                total_segments,
+                Stage::Upscale,
+                seg.frame_count,
+                seg.frame_count,
+                true,
+            );
+            mark_stage_done(&shared_progress, seg.frame_count);
         }
-        report_stage(
-            app,
-            job_id,
-            &shared_progress,
-            &weights,
-            seg.index,
-            total_segments,
-            Stage::Upscale,
-            seg.frame_count,
-            seg.frame_count,
-            true,
-        );
-        mark_stage_done(&shared_progress, seg.frame_count);
 
-        // Если интерполяция пропущена, encode будет читать из up/, поэтому
-        // in/ можно освободить уже сейчас (раньше, чем при обычном тайминге
-        // "после interpolate") — см. cleanup.rs.
-        if !interpolating {
+        // Кадры для следующей стадии (interpolate либо encode) лежат в up/,
+        // если апскейл выполнялся, иначе прямо в in/ (апскейл пропущен).
+        let frames_source_dir = if upscaling { "up" } else { "in" };
+
+        // Если апскейл выполнялся и интерполяция пропущена, encode будет
+        // читать из up/, поэтому in/ можно освободить уже сейчас (раньше,
+        // чем при обычном тайминге "после interpolate") — см. cleanup.rs.
+        // Если апскейл был пропущен, in/ — это как раз источник кадров для
+        // encode, удалять его сейчас нельзя.
+        if upscaling && !interpolating {
             cleanup::remove_in_dir(&seg_dir, settings.keep_intermediate)?;
         }
 
@@ -498,6 +536,7 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
                 interpolate::interpolate_segment(
                     app,
                     &seg_dir,
+                    frames_source_dir,
                     rife_dir.as_ref().expect("rife_dir должен быть Some при interpolating=true"),
                     target_frames,
                     cancel,
@@ -532,13 +571,14 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
             );
             mark_stage_done(&shared_progress, target_frames);
 
-            // in/ и up/ полностью потреблены интерполяцией.
+            // in/ и up/ полностью потреблены интерполяцией (remove_up_dir —
+            // no-op, если up/ не существует, т.е. апскейл был пропущен).
             cleanup::remove_in_dir(&seg_dir, settings.keep_intermediate)?;
             cleanup::remove_up_dir(&seg_dir, settings.keep_intermediate)?;
 
             ("rife", target_frames)
         } else {
-            ("up", seg.frame_count)
+            (frames_source_dir, seg.frame_count)
         };
 
         // --- encode ---
@@ -585,11 +625,15 @@ async fn run_inner(ctx: &PipelineCtx, temp_root: &std::path::Path) -> Result<Job
         );
         mark_stage_done(&shared_progress, encode_input_total);
 
-        // Освобождаем последнюю оставшуюся директорию кадров сегмента.
+        // Освобождаем последнюю оставшуюся директорию кадров сегмента: rife/,
+        // если была интерполяция, иначе — то, что encode читал напрямую
+        // (up/, если был апскейл, либо in/, если апскейл был пропущен).
         if interpolating {
             cleanup::remove_rife_dir(&seg_dir, settings.keep_intermediate)?;
-        } else {
+        } else if upscaling {
             cleanup::remove_up_dir(&seg_dir, settings.keep_intermediate)?;
+        } else {
+            cleanup::remove_in_dir(&seg_dir, settings.keep_intermediate)?;
         }
 
         segment_outputs.push(seg_dir.join("out.mkv"));

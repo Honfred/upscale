@@ -38,6 +38,14 @@ pub async fn encode_segment(
         "-y".to_string(),
         "-framerate".to_string(),
         format!("{out_fps}"),
+        // Кадры во всех промежуточных папках (in/, up/, rife/) нумеруются с 1
+        // (decode пишет с frame_00000001.png; realesrgan сохраняет исходные
+        // имена входных файлов; rife-ncnn-vulkan с явным -f frame_%08d.png
+        // также нумерует с 1 — проверено на реальных бинарниках). Без явного
+        // -start_number ffmpeg находит первый файл через автоопределение
+        // (start_number_range=5), что работает, но неявно и хрупко.
+        "-start_number".to_string(),
+        "1".to_string(),
         "-i".to_string(),
         pattern.to_string_lossy().to_string(),
     ];

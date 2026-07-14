@@ -18,6 +18,10 @@ pub struct SourceInfo {
     pub duration_sec: f64,
     /// nb_frames либо round(fps * duration).
     pub frame_count: u64,
+    /// true, если r_frame_rate заметно (>1%) отличается от avg_frame_rate —
+    /// признак переменного кадра (VFR). Сегментация по фиксированному fps в
+    /// этом случае может давать неточные границы (см. pipeline::run).
+    pub is_vfr: bool,
     pub has_audio: bool,
     pub subtitle_streams: Vec<u32>,
     pub codec_name: String,
@@ -78,19 +82,21 @@ fn parse_ratio(s: &str) -> Option<f64> {
 /// Выбирает fps из r_frame_rate/avg_frame_rate. Для VFR-контента (когда
 /// avg_frame_rate заметно отличается от r_frame_rate) предпочитает
 /// avg_frame_rate, т.к. r_frame_rate для VFR обычно завышен/неточен.
-fn choose_fps(r_frame_rate: Option<&str>, avg_frame_rate: Option<&str>) -> Option<f64> {
+/// Возвращает (fps, is_vfr).
+fn choose_fps(r_frame_rate: Option<&str>, avg_frame_rate: Option<&str>) -> Option<(f64, bool)> {
     let r = r_frame_rate.and_then(parse_ratio).filter(|v| *v > 0.0);
     let avg = avg_frame_rate.and_then(parse_ratio).filter(|v| *v > 0.0);
     match (r, avg) {
         (Some(r), Some(avg)) => {
-            if ((r - avg).abs() / r) > 0.01 {
-                Some(avg)
+            let is_vfr = ((r - avg).abs() / r) > 0.01;
+            if is_vfr {
+                Some((avg, true))
             } else {
-                Some(r)
+                Some((r, false))
             }
         }
-        (Some(r), None) => Some(r),
-        (None, Some(avg)) => Some(avg),
+        (Some(r), None) => Some((r, false)),
+        (None, Some(avg)) => Some((avg, false)),
         (None, None) => None,
     }
 }
@@ -133,9 +139,9 @@ pub async fn probe(app: &AppHandle, path: &str) -> Result<SourceInfo> {
         .height
         .ok_or_else(|| AppError::Probe("не удалось определить высоту видео".to_string()))?;
 
-    let fps = choose_fps(stream.r_frame_rate.as_deref(), stream.avg_frame_rate.as_deref())
-        .ok_or_else(|| AppError::Probe("не удалось определить fps".to_string()))?
-        as f32;
+    let (fps, is_vfr) = choose_fps(stream.r_frame_rate.as_deref(), stream.avg_frame_rate.as_deref())
+        .ok_or_else(|| AppError::Probe("не удалось определить fps".to_string()))?;
+    let fps = fps as f32;
 
     let duration_sec: f64 = parsed
         .format
@@ -189,6 +195,7 @@ pub async fn probe(app: &AppHandle, path: &str) -> Result<SourceInfo> {
         fps,
         duration_sec,
         frame_count,
+        is_vfr,
         has_audio,
         subtitle_streams,
         codec_name,
@@ -222,21 +229,23 @@ mod tests {
 
     #[test]
     fn choose_fps_prefers_r_when_close() {
-        let fps = choose_fps(Some("24000/1001"), Some("23976/1000")).unwrap();
+        let (fps, is_vfr) = choose_fps(Some("24000/1001"), Some("23976/1000")).unwrap();
         assert!((fps - 23.976_023_976).abs() < 1e-3);
+        assert!(!is_vfr);
     }
 
     #[test]
     fn choose_fps_prefers_avg_for_vfr() {
         // r_frame_rate завышен (типично для VFR), avg_frame_rate ближе к реальности.
-        let fps = choose_fps(Some("60/1"), Some("24/1")).unwrap();
+        let (fps, is_vfr) = choose_fps(Some("60/1"), Some("24/1")).unwrap();
         assert_eq!(fps, 24.0);
+        assert!(is_vfr);
     }
 
     #[test]
     fn choose_fps_falls_back_to_only_available() {
-        assert_eq!(choose_fps(None, Some("30/1")), Some(30.0));
-        assert_eq!(choose_fps(Some("30/1"), None), Some(30.0));
+        assert_eq!(choose_fps(None, Some("30/1")), Some((30.0, false)));
+        assert_eq!(choose_fps(Some("30/1"), None), Some((30.0, false)));
         assert_eq!(choose_fps(None, None), None);
     }
 }

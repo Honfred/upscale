@@ -25,7 +25,10 @@ pub struct DiskEstimate {
 }
 
 /// Доля свободного места, которую не должен превышать пиковый расход temp.
-const PEAK_FRACTION: f64 = 0.6;
+/// pub(crate), т.к. используется также в pipeline::run для рантайм-проверки
+/// свободного места перед каждым сегментом (единая константа вместо
+/// рассинхронизированных порогов).
+pub(crate) const PEAK_FRACTION: f64 = 0.6;
 /// Диапазон авто-подбора segment_seconds.
 const SEGMENT_MIN: u32 = 6;
 const SEGMENT_MAX: u32 = 20;
@@ -121,9 +124,20 @@ pub(crate) fn available_space(path: &Path) -> Result<u64> {
     }
 }
 
-/// Оценивает пик temp-диска (кадры in/up/rife одного сегмента) и подбирает
-/// segment_seconds так, чтобы пик был < 60% свободного места (диапазон 6..20 с),
-/// если пользователь не задал его явно.
+/// Оценивает пик temp-диска и подбирает segment_seconds так, чтобы пик был
+/// < 60% свободного места (диапазон 6..20 с), если пользователь не задал его
+/// явно.
+///
+/// Пик — это НЕ только кадры одного обрабатываемого сегмента (in/up/rife +
+/// его собственный out.mkv, см. `segment_peak_bytes`): пока идёт обработка,
+/// на диске одновременно лежат ещё и out.mkv ВСЕХ уже обработанных сегментов
+/// (они удаляются только после успешного concat всей джобы), а на стадии
+/// concat к ним ненадолго добавляется ещё и растущий финальный файл. Сумма
+/// всех сегментных out.mkv грубо равна `output_bytes_est` (тот же битрейт),
+/// поэтому реальный пик аппроксимируется как:
+///   segment_peak_bytes(один сегмент) + 2 * output_bytes_est
+/// (первое слагаемое output_bytes_est — уже готовые сегментные .mkv,
+/// второе — параллельно пишущийся финальный файл во время concat).
 pub fn estimate(
     source: &SourceInfo,
     settings: &UpscaleSettings,
@@ -132,20 +146,27 @@ pub fn estimate(
     let scale = settings.scale_for(source.width);
     // out_width/out_height — ФИНАЛЬНОЕ разрешение видео (для UI/отчёта), с
     // учётом возможного downscale в encode. Промежуточные PNG в up/ и rife/
-    // при этом лежат на диске в СЫРОМ (не capped) разрешении апскейла —
-    // downscale до target_width применяется только внутри ffmpeg на стадии
-    // encode (-vf scale=...), а не заранее. Поэтому для оценки пикового
-    // расхода диска используется raw_width/raw_height, а не capped.
+    // при этом лежат на диске в СЫРОМ (не capped) разрешении апскейла (или в
+    // разрешении источника, если scale=1 и апскейл пропущен) — downscale до
+    // target_width применяется только внутри ffmpeg на стадии encode (-vf
+    // scale=...), а не заранее. Поэтому для оценки пикового расхода диска
+    // используется raw_width/raw_height, а не capped.
     let (out_width, out_height) = capped_out_resolution(source, settings, scale);
     let raw_width = source.width * scale;
     let raw_height = source.height * scale;
 
     let free_bytes = available_space(temp_root)?;
 
+    let output_bytes_est = (source.duration_sec * OUTPUT_BITRATE_BPS / 8.0).round() as u64;
+    // Уже готовые сегментные .mkv (~output_bytes_est) + финальный файл,
+    // пишущийся параллельно с ними во время concat (~output_bytes_est).
+    let fixed_overhead = 2 * output_bytes_est;
+
     let (segment_seconds, temp_peak_bytes, sufficient) = match settings.segment_seconds {
         Some(explicit) => {
             let frames = frames_for_seconds(explicit, source.fps);
-            let peak = segment_peak_bytes(source, settings, raw_width, raw_height, frames);
+            let seg_peak = segment_peak_bytes(source, settings, raw_width, raw_height, frames);
+            let peak = seg_peak + fixed_overhead;
             let sufficient = (peak as f64) < PEAK_FRACTION * free_bytes as f64;
             (explicit, peak, sufficient)
         }
@@ -153,7 +174,8 @@ pub fn estimate(
             let mut chosen: Option<(u32, u64)> = None;
             for candidate in (SEGMENT_MIN..=SEGMENT_MAX).rev() {
                 let frames = frames_for_seconds(candidate, source.fps);
-                let peak = segment_peak_bytes(source, settings, raw_width, raw_height, frames);
+                let seg_peak = segment_peak_bytes(source, settings, raw_width, raw_height, frames);
+                let peak = seg_peak + fixed_overhead;
                 if (peak as f64) < PEAK_FRACTION * free_bytes as f64 {
                     chosen = Some((candidate, peak));
                     break;
@@ -163,19 +185,23 @@ pub fn estimate(
                 Some((seconds, peak)) => (seconds, peak, true),
                 None => {
                     let frames = frames_for_seconds(SEGMENT_MIN, source.fps);
-                    let peak =
+                    let seg_peak =
                         segment_peak_bytes(source, settings, raw_width, raw_height, frames);
-                    (SEGMENT_MIN, peak, false)
+                    (SEGMENT_MIN, seg_peak + fixed_overhead, false)
                 }
             }
         }
     };
 
+    // temp_total_written — суммарный объём данных, реально записываемых в
+    // temp за всю джобу (для информационных целей, напр. оценки износа
+    // диска), а НЕ одномоментный пик. fixed_overhead в него не входит: это
+    // не дополнительная запись, а часть уже учтённых в segment_peak_bytes
+    // (через bytes_mkv) данных, просто ещё не удалённых к моменту пика.
     let seg_frames = frames_for_seconds(segment_seconds, source.fps) as f64;
     let num_segments = (source.frame_count as f64 / seg_frames).ceil().max(1.0);
-    let temp_total_written = (temp_peak_bytes as f64 * num_segments).round() as u64;
-
-    let output_bytes_est = (source.duration_sec * OUTPUT_BITRATE_BPS / 8.0).round() as u64;
+    let seg_peak_only = temp_peak_bytes.saturating_sub(fixed_overhead);
+    let temp_total_written = (seg_peak_only as f64 * num_segments).round() as u64;
 
     Ok(DiskEstimate {
         temp_peak_bytes,
@@ -203,6 +229,7 @@ mod tests {
             fps,
             duration_sec,
             frame_count: (fps as f64 * duration_sec).round() as u64,
+            is_vfr: false,
             has_audio: true,
             subtitle_streams: vec![],
             codec_name: "h264".into(),
@@ -276,5 +303,56 @@ mod tests {
         let temp_root = std::env::temp_dir();
         let est = estimate(&src, &settings, &temp_root).unwrap();
         assert_eq!(est.segment_seconds, 12);
+    }
+
+    #[test]
+    fn scale_for_returns_one_when_source_at_or_above_target() {
+        let settings_4k = settings(3840, None);
+        // Источник уже 4K (равен target_width) — апскейл не нужен.
+        assert_eq!(settings_4k.scale_for(3840), 1);
+        // Источник шире target_width (8K источник, 4K target) — тоже 1.
+        assert_eq!(settings_4k.scale_for(7680), 1);
+        // Источник уже целевой ширины — обычный подбор масштаба (x2).
+        assert_eq!(settings_4k.scale_for(1920), 2);
+    }
+
+    #[test]
+    fn capped_resolution_with_scale_one_keeps_source_or_downscales() {
+        // Источник ровно 4K при target_width 3840 -> scale=1, разрешение не меняется.
+        let src = source(3840, 2160, 24.0, 60.0);
+        let settings = settings(3840, None);
+        let scale = settings.scale_for(src.width);
+        assert_eq!(scale, 1);
+        let (w, h) = capped_out_resolution(&src, &settings, scale);
+        assert_eq!((w, h), (3840, 2160));
+    }
+
+    #[test]
+    fn temp_peak_bytes_includes_fixed_overhead_of_two_output_estimates() {
+        let src = source(1920, 1080, 24.0, 600.0);
+        let mut settings = settings(3840, Some(60.0));
+        settings.segment_seconds = Some(12);
+        let temp_root = std::env::temp_dir();
+        let est = estimate(&src, &settings, &temp_root).unwrap();
+
+        let frames = frames_for_seconds(12, src.fps);
+        let seg_peak = segment_peak_bytes(&src, &settings, 3840, 2160, frames);
+        let expected_peak = seg_peak + 2 * est.output_bytes_est;
+        assert_eq!(est.temp_peak_bytes, expected_peak);
+        // Пик обязан быть строго больше пика одного сегмента (учитывает
+        // "хвост" уже готовых сегментных .mkv + финальный файл).
+        assert!(est.temp_peak_bytes > seg_peak);
+    }
+
+    #[test]
+    fn sufficient_is_false_when_fixed_overhead_alone_exceeds_budget() {
+        // Очень длинное видео -> output_bytes_est огромен -> даже
+        // минимальный сегмент не уложится в 60% свободного места только за
+        // счёт fixed_overhead (2 * output_bytes_est).
+        let src = source(1920, 1080, 24.0, 10_000_000.0);
+        let settings = settings(3840, Some(60.0));
+        let temp_root = std::env::temp_dir();
+        let est = estimate(&src, &settings, &temp_root).unwrap();
+        assert!(!est.sufficient);
     }
 }
