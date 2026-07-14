@@ -44,9 +44,11 @@
   .stage {
     flex: 1;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: var(--space-2);
-    padding: 10px 12px;
+    text-align: center;
+    gap: 6px;
+    padding: 10px 6px;
     border-radius: var(--radius-md);
     border: 1px solid var(--border);
     background: var(--surface);
@@ -103,6 +105,7 @@
   }
 
   .label {
+    max-width: 100%;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
