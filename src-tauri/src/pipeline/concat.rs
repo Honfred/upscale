@@ -66,6 +66,17 @@ async fn run_concat_ffmpeg(
         args.push("mov_text".to_string());
     }
 
+    // Пишем во временный файл {output}.part — ffmpeg не может вывести формат
+    // из такого расширения, поэтому муксер задаётся явно.
+    args.push("-f".to_string());
+    args.push(
+        match settings.container {
+            Container::Mkv => "matroska",
+            Container::Mp4 => "mp4",
+        }
+        .to_string(),
+    );
+
     args.push(output_path.to_string_lossy().to_string());
 
     run_sidecar(app, "ffmpeg", &args, cancel, &mut |_line| {}).await
