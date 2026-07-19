@@ -16,7 +16,9 @@ use crate::process::run_sidecar;
 fn write_concat_file(path: &Path, segment_outputs: &[PathBuf]) -> Result<()> {
     let mut content = String::new();
     for seg in segment_outputs {
-        let abs = seg.canonicalize().unwrap_or_else(|_| seg.clone());
+        // dunce::canonicalize вместо std: на Windows std даёт verbatim-путь
+        // (\\?\C:\...), с которым ffmpeg concat может не работать.
+        let abs = dunce::canonicalize(seg).unwrap_or_else(|_| seg.clone());
         let escaped = abs.to_string_lossy().replace('\'', "'\\''");
         content.push_str(&format!("file '{escaped}'\n"));
     }

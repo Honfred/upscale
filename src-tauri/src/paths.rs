@@ -9,10 +9,19 @@ use crate::config::{Container, UpscaleSettings, RIFE_MODEL_DIR};
 use crate::error::{AppError, Result};
 use crate::probe::SourceInfo;
 
+/// Windows: Tauri resolve/canonicalize возвращают verbatim-пути (`\\?\C:\...`),
+/// которые ncnn-бинарники не понимают (трактуют как относительные:
+/// `_wfopen E:\AnimeUpscale\\\?\E:\...` failed). dunce::simplified убирает
+/// префикс, где это безопасно; на не-Windows — no-op.
+fn desidecar(p: PathBuf) -> PathBuf {
+    dunce::simplified(&p).to_path_buf()
+}
+
 /// Папка моделей Real-ESRGAN (resource "models-realesrgan").
 pub fn esrgan_models_dir(app: &AppHandle) -> Result<PathBuf> {
     app.path()
         .resolve("models-realesrgan", BaseDirectory::Resource)
+        .map(desidecar)
         .map_err(|e| AppError::Config(format!("не удалось найти папку моделей Real-ESRGAN: {e}")))
 }
 
@@ -23,6 +32,7 @@ pub fn rife_model_dir(app: &AppHandle) -> Result<PathBuf> {
             format!("models-rife/{RIFE_MODEL_DIR}"),
             BaseDirectory::Resource,
         )
+        .map(desidecar)
         .map_err(|e| AppError::Config(format!("не удалось найти папку модели RIFE: {e}")))
 }
 
@@ -35,7 +45,7 @@ pub fn job_temp_dir(app: &AppHandle, settings: &UpscaleSettings, job_id: &str) -
             .app_cache_dir()
             .map_err(|e| AppError::Config(format!("не удалось определить кэш-директорию: {e}")))?,
     };
-    Ok(root.join("jobs").join(job_id))
+    Ok(desidecar(root.join("jobs").join(job_id)))
 }
 
 /// Путь выходного файла: {output_dir | рядом с исходником}/{stem}_4k60.{mkv|mp4},

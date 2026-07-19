@@ -45,6 +45,7 @@ dependencies = [
 name = "animeupscale"
 version = "0.1.4"
 dependencies = [
+ "dunce",
  "fs2",
  "regex",
  "serde",

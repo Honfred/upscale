@@ -24,6 +24,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 uuid = { version = "1", features = ["v4"] }
+dunce = "1"
 fs2 = "0.4"
 regex = "1"
 
