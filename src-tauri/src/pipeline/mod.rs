@@ -120,6 +120,13 @@ struct ProgressState {
     ema_fps: Option<f32>,
     last_sample_at: Instant,
     last_sample_frames: u64,
+    /// EMA скорости ВЗВЕШЕННОГО прогресса (доля джобы в секунду) — основа ETA.
+    /// Считать ETA по сырым кадрам нельзя: стадии сильно неравноценны (декод
+    /// ~50x быстрее апскейла), и кадровый ETA в начале джобы завышал оценку
+    /// в разы (наблюдалось «20 часов» при фактических 6.5).
+    ema_rate: Option<f32>,
+    last_rate_at: Instant,
+    last_overall: f32,
     /// Кадры, "накопленные" завершёнными стадиями (в единицах Started.total_frames).
     frames_done_before_stage: u64,
     total_frames_job: u64,
@@ -136,6 +143,9 @@ fn new_shared_progress(total_frames_job: u64) -> SharedProgress {
         ema_fps: None,
         last_sample_at: now,
         last_sample_frames: 0,
+        ema_rate: None,
+        last_rate_at: now,
+        last_overall: 0.0,
         frames_done_before_stage: 0,
         total_frames_job,
     }))
@@ -208,18 +218,30 @@ fn report_stage(
     };
     let overall_progress = overall_progress.clamp(0.0, 1.0);
 
+    // Семплируем скорость взвешенного прогресса не чаще раза в 0.5 с
+    // (одиночные 100-мс тики слишком шумные для EMA).
+    let rate_dt = now.duration_since(state.last_rate_at).as_secs_f32();
+    if rate_dt >= 0.5 {
+        let inst_rate = (overall_progress - state.last_overall).max(0.0) / rate_dt;
+        state.ema_rate = Some(match state.ema_rate {
+            Some(prev) => EMA_ALPHA * inst_rate + (1.0 - EMA_ALPHA) * prev,
+            None => inst_rate,
+        });
+        state.last_rate_at = now;
+        state.last_overall = overall_progress;
+    }
+
     let (fps_now, eta_seconds) = if state.job_start.elapsed() < WARMUP {
         (None, None)
     } else {
-        match state.ema_fps {
-            Some(fps) if fps > 0.01 => {
-                let remaining = state
-                    .total_frames_job
-                    .saturating_sub(frames_done_global) as f32;
-                (Some(fps), Some((remaining / fps).max(0.0) as u64))
-            }
-            _ => (None, None),
-        }
+        // fps_now — мгновенная скорость кадров текущей стадии (информативно
+        // для UI); ETA — из EMA взвешенного прогресса (см. ProgressState).
+        let fps = state.ema_fps.filter(|f| *f > 0.01);
+        let eta = state
+            .ema_rate
+            .filter(|r| *r > 1e-7)
+            .map(|r| (((1.0 - overall_progress) / r).max(0.0)) as u64);
+        (fps, eta)
     };
 
     events::emit_progress(

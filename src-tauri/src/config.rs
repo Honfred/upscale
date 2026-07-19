@@ -62,8 +62,13 @@ pub const BIN_RIFE: &str = "animeupscale-rife";
 
 /// NVENC preset зафиксирован (баланс скорость/качество для 4070 Super).
 pub const NVENC_PRESET: &str = "p5";
-/// Tile size для ncnn-vulkan на 12GB VRAM при 4K-выводе.
-pub const NCNN_TILE: u32 = 256;
+/// Tile size для realesrgan-ncnn-vulkan: 0 = авто-подбор по объёму VRAM
+/// (фиксированные 256 на 12GB были излишне консервативны: бенчмарк на
+/// 4070 Super показал +23% скорости с авто-тайлом).
+pub const NCNN_TILE: u32 = 0;
+/// Потоки load:proc:save для ncnn-бинарников. 2:2:2 упирались в CPU-кодирование
+/// PNG при сохранении 4K-кадров (бенчмарк: RIFE +52%, ESRGAN +23% на 4:4:4).
+pub const NCNN_THREADS: &str = "4:4:4";
 /// Модель Real-ESRGAN для аниме-видео.
 pub const ESRGAN_MODEL: &str = "realesr-animevideov3";
 /// Модель RIFE (поддерживает произвольное число выходных кадров, -n).

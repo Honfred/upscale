@@ -5,7 +5,7 @@ use std::time::Duration;
 use tauri::AppHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{ESRGAN_MODEL, NCNN_TILE};
+use crate::config::{ESRGAN_MODEL, NCNN_THREADS, NCNN_TILE};
 use crate::error::{AppError, Result};
 use crate::process::run_sidecar;
 
@@ -58,7 +58,7 @@ pub async fn upscale_segment(
         "-g".to_string(),
         "0".to_string(),
         "-j".to_string(),
-        "2:2:2".to_string(),
+        NCNN_THREADS.to_string(),
     ];
 
     let (handle, stop_tx) =

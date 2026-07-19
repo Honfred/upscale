@@ -72,7 +72,7 @@ pub async fn interpolate_segment(
         "-g".to_string(),
         "0".to_string(),
         "-j".to_string(),
-        "2:2:2".to_string(),
+        crate::config::NCNN_THREADS.to_string(),
         "-f".to_string(),
         "frame_%08d.png".to_string(),
     ];

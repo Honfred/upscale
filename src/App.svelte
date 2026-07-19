@@ -12,7 +12,7 @@
   import Banner from "./components/Banner.svelte";
   import Icon from "./components/Icon.svelte";
 
-  const APP_VERSION = "0.1.3";
+  const APP_VERSION = "0.1.4";
 
   onMount(() => {
     void app.checkSystem();
